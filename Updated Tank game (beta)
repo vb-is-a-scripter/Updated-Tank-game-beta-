@@ -1,0 +1,249 @@
+-- Combined Speed, Aura, and MAX speed function with a Compact GUI
+-- Aura: Teleports to nearest player in range.
+-- Speed: Short-distance forward pulse.
+-- MAX speed: Smoothly moves you forward at a constant speed of 75.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+
+--=================================================
+-- CONFIGURATION
+--=================================================
+-- Original Config
+local SPEED_DISTANCE = 3
+local SPEED_PULSE_INTERVAL = 0.05
+local SPEED_KEYBIND = Enum.KeyCode.T
+
+local AURA_RANGE_LIMIT = 7
+local AURA_KEYBIND = Enum.KeyCode.G
+
+-- UPDATED: MAX speed Config
+local MAX_SPEED_VALUE = 75 -- Changed from 70 to 75
+local MAX_SPEED_KEYBIND = Enum.KeyCode.Y
+
+--=================================================
+-- STATE VARIABLES
+--=================================================
+local isSpeedEnabled = false
+local speedConnection = nil
+local lastSpeedPulse = 0
+
+local isAuraEnabled = false
+local auraConnection = nil
+
+-- UPDATED: MAX speed State
+local isMaxSpeedEnabled = false
+local maxSpeedConnection = nil
+
+--=================================================
+-- UI SETUP
+--=================================================
+local gui = Instance.new("ScreenGui")
+gui.Name = "MultiTeleportGui"
+gui.ResetOnSpawn = false
+gui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+-- Main container frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "ControlFrame"
+mainFrame.AnchorPoint = Vector2.new(0, 1)
+mainFrame.Position = UDim2.new(0, 15, 1, -15)
+mainFrame.Size = UDim2.new(0, 120, 0, 123)
+mainFrame.BackgroundColor3 = Color3.fromRGB(21, 25, 32)
+mainFrame.BorderColor3 = Color3.fromRGB(50, 58, 71)
+mainFrame.Parent = gui
+
+local frameCorner = Instance.new("UICorner", mainFrame)
+frameCorner.CornerRadius = UDim.new(0, 8)
+
+-- DRAG BAR at the top
+local dragBar = Instance.new("Frame")
+dragBar.Name = "DragBar"
+dragBar.Size = UDim2.new(1, 0, 0, 18)
+dragBar.BackgroundColor3 = Color3.fromRGB(25, 35, 80)
+dragBar.BorderSizePixel = 0
+dragBar.Parent = mainFrame
+local dragBarCorner = Instance.new("UICorner", dragBar)
+dragBarCorner.CornerRadius = UDim.new(0, 6)
+
+-- Title Label
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "TitleLabel"
+titleLabel.Size = UDim2.new(1, 0, 1, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "vb's tank"
+titleLabel.Font = Enum.Font.GothamSemibold
+titleLabel.TextSize = 14
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextStrokeTransparency = 0.75
+titleLabel.TextXAlignment = Enum.TextXAlignment.Center
+titleLabel.TextYAlignment = Enum.TextYAlignment.Center
+titleLabel.Parent = dragBar
+
+-- Container for the buttons
+local buttonContainer = Instance.new("Frame")
+buttonContainer.Name = "ButtonContainer"
+buttonContainer.Size = UDim2.new(1, 0, 1, -18)
+buttonContainer.Position = UDim2.new(0, 0, 0, 18)
+buttonContainer.BackgroundTransparency = 1
+buttonContainer.Parent = mainFrame
+
+local listLayout = Instance.new("UIListLayout", buttonContainer)
+listLayout.FillDirection = Enum.FillDirection.Vertical
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 5)
+local listPadding = Instance.new("UIPadding", buttonContainer)
+listPadding.PaddingLeft = UDim.new(0, 8)
+listPadding.PaddingRight = UDim.new(0, 8)
+listPadding.PaddingTop = UDim.new(0, 8)
+listPadding.PaddingBottom = UDim.new(0, 8)
+
+-- Button Creation
+local function makeButton(name, order, text)
+	local btn = Instance.new("TextButton")
+	btn.Name = name; btn.LayoutOrder = order
+	btn.Size = UDim2.new(1, 0, 0, 30); btn.Font = Enum.Font.GothamSemibold
+	btn.Text = text; btn.TextSize = 14
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255); btn.Parent = buttonContainer
+	local corner = Instance.new("UICorner", btn); corner.CornerRadius = UDim.new(0, 6)
+	return btn
+end
+
+local auraButton = makeButton("AuraButton", 1, "Aura")
+local speedButton = makeButton("SpeedButton", 2, "Speed")
+local maxSpeedButton = makeButton("MaxSpeedButton", 3, "MAX speed") -- RENAMED BUTTON
+
+--=================================================
+-- DRAGGING LOGIC
+--=================================================
+dragBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        local dragStart = input.Position
+        local startPosition = mainFrame.Position
+        
+        local inputChangedConnection
+        inputChangedConnection = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                inputChangedConnection:Disconnect()
+            else
+                local delta = input.Position - dragStart
+                mainFrame.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+            end
+        end)
+    end
+end)
+
+--=================================================
+-- CORE LOGIC
+--=================================================
+local function getRoot()
+    return localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+end
+
+-- Original Speed Pulse Logic
+local function runSpeedPulse(dt)
+    lastSpeedPulse = lastSpeedPulse + dt
+    if lastSpeedPulse < SPEED_PULSE_INTERVAL then return end
+    lastSpeedPulse = 0
+    local root = getRoot()
+    if not root then return end
+    root.CFrame = root.CFrame + (root.CFrame.LookVector * SPEED_DISTANCE)
+end
+
+-- Original Aura Logic
+local function runAuraPulse()
+    local root = getRoot()
+    if not root then return end
+    local currentPosition = root.Position
+    local nearestTarget = nil
+    local minDistance = AURA_RANGE_LIMIT
+    for _, otherPlayer in ipairs(Players:GetPlayers()) do
+        if otherPlayer ~= localPlayer and otherPlayer.Character then
+            local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if otherRoot then
+                local distance = (currentPosition - otherRoot.Position).Magnitude
+                if distance < minDistance then
+                    minDistance = distance
+                    nearestTarget = otherRoot
+                end
+            end
+        end
+    end
+    if nearestTarget then
+        root.CFrame = nearestTarget.CFrame
+    end
+end
+
+-- UPDATED: MAX speed Logic
+local function runMaxSpeedMove(dt)
+    local root = getRoot()
+    if not root then return end
+    root.CFrame = root.CFrame + (root.CFrame.LookVector * MAX_SPEED_VALUE * dt)
+end
+
+--=================================================
+-- TOGGLE FUNCTIONS & UI UPDATES
+--=================================================
+local function updateButtons()
+    local onColor = Color3.fromRGB(39, 181, 113)
+    local offColor = Color3.fromRGB(43, 49, 61)
+    speedButton.BackgroundColor3 = isSpeedEnabled and onColor or offColor
+    auraButton.BackgroundColor3 = isAuraEnabled and onColor or offColor
+    maxSpeedButton.BackgroundColor3 = isMaxSpeedEnabled and onColor or offColor -- Update new button
+end
+
+local function toggleSpeed()
+    isSpeedEnabled = not isSpeedEnabled
+    updateButtons()
+    if isSpeedEnabled then
+        lastSpeedPulse = 0
+        speedConnection = RunService.Heartbeat:Connect(runSpeedPulse)
+    elseif speedConnection then
+        speedConnection:Disconnect()
+        speedConnection = nil
+    end
+end
+
+local function toggleAura()
+    isAuraEnabled = not isAuraEnabled
+    updateButtons()
+    if isAuraEnabled then
+        auraConnection = RunService.Heartbeat:Connect(runAuraPulse)
+    elseif auraConnection then
+        auraConnection:Disconnect()
+        auraConnection = nil
+    end
+end
+
+-- UPDATED: Toggle function for MAX speed
+local function toggleMaxSpeed()
+    isMaxSpeedEnabled = not isMaxSpeedEnabled
+    updateButtons()
+    if isMaxSpeedEnabled then
+        maxSpeedConnection = RunService.RenderStepped:Connect(runMaxSpeedMove)
+    elseif maxSpeedConnection then
+        maxSpeedConnection:Disconnect()
+        maxSpeedConnection = nil
+    end
+end
+
+--=================================================
+-- CONNECTIONS & INITIALIZATION
+--=================================================
+speedButton.MouseButton1Click:Connect(toggleSpeed)
+auraButton.MouseButton1Click:Connect(toggleAura)
+maxSpeedButton.MouseButton1Click:Connect(toggleMaxSpeed) -- Connect new button
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == SPEED_KEYBIND then toggleSpeed()
+    elseif input.KeyCode == AURA_KEYBIND then toggleAura() 
+    elseif input.KeyCode == MAX_SPEED_KEYBIND then toggleMaxSpeed() -- Connect new keybind
+    end
+end)
+
+-- Set initial button colors on script start
+updateButtons()
